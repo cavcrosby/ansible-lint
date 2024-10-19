@@ -13,17 +13,21 @@ from typing import TYPE_CHECKING, Any
 
 # pylint: disable=preferred-module
 from unittest import mock
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 # pylint: disable=reimported
 import ansible.module_utils.basic as mock_ansible_module
 from ansible.module_utils import basic
 
 from ansiblelint.constants import LINE_NUMBER_KEY
+from ansible.playbook.task import Task as ansible_task
+from ansible.plugins import loader as plugin_loader
+from ansible.plugins.loader import action_loader
 from ansiblelint.rules import AnsibleLintRule, RulesCollection
 from ansiblelint.text import has_jinja
 from ansiblelint.utils import load_plugin
 from ansiblelint.yaml_utils import clean_json
+
 
 if TYPE_CHECKING:
     from ansiblelint.errors import MatchError
@@ -163,9 +167,27 @@ class ArgsRule(AnsibleLintRule):
 
             try:
                 if not hasattr(module, "main"):
-                    # skip validation for module options that are implemented as action plugin
-                    # as the option values can be changed in action plugin and are not passed
-                    # through `ArgumentSpecValidator` class as in case of modules.
+                    # put together ActionBase instance creation by following what was done here,
+                    # https://github.com/ansible/ansible/blob/devel/test/units/plugins/action/test_action.py#L59
+                    connection = MagicMock()
+                    # just need defaults to iterate over, as seen here,
+                    # https://github.com/ansible/ansible/blob/devel/lib/ansible/plugins/action/__init__.py#L236
+                    # 
+                    # default value here,
+                    # https://github.com/ansible/ansible/blob/devel/lib/ansible/plugins/connection/__init__.py#L61
+                    connection.module_implementation_preferences = ('',)
+                    base = module.ActionModule(
+                        # must use ansible's Task, and not ansible-lint's Task
+                        task=ansible_task.load(dict(action=task.action, args=task.args)),
+                        connection=connection,
+                        play_context=MagicMock(),
+                        loader=action_loader,
+                        templar=None,
+                        # needs module to access all loaders, see _shared_loader_obj.module_loader from,
+                        # https://github.com/ansible/ansible/blob/devel/lib/ansible/plugins/action/__init__.py#L263C27-L263C59
+                        shared_loader_obj=plugin_loader,
+                    )
+                    base._get_argspec_from_docs(module_name, module_args)
                     return []
 
                 with patch.object(
@@ -182,7 +204,7 @@ class ArgsRule(AnsibleLintRule):
                         basic._ANSIBLE_ARGS = None  # noqa: SLF001
                         try:
                             module.main()
-                        except SystemExit:
+                        except SystemExit
                             failed_msg = fio.getvalue()
                     if failed_msg:
                         results.extend(
